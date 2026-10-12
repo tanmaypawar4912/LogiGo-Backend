@@ -6,13 +6,14 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 
 import { env } from "./config/env.js";
+
 import authRoutes from "./routes/authRoutes.js";
 import vehicleRoutes from "./routes/vehicleRoutes.js";
+import pricingRoutes from "./routes/pricingRoutes.js";
+import bookingRoutes from "./routes/bookingRoutes.js";
 
 const app = express();
 
-// Explicitly allow the frontend origin.
-// In production, env.CLIENT_URL must contain your deployed frontend URL.
 const allowedOrigins = new Set(
   [
     env.CLIENT_URL,
@@ -25,55 +26,42 @@ const allowedOrigins = new Set(
   ].filter(Boolean)
 );
 
-const corsOptions = {
-  origin(origin, callback) {
-    // Requests from Postman and other non-browser clients may have no Origin.
-    if (!origin || allowedOrigins.has(origin)) {
-      return callback(null, true);
-    }
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) {
+        return callback(null, true);
+      }
 
-    return callback(
-      new Error(`CORS blocked origin: ${origin}`)
-    );
-  },
+      return callback(
+        new Error(`CORS blocked origin: ${origin}`)
+      );
+    },
 
-  credentials: true,
+    credentials: true,
 
-  methods: [
-    "GET",
-    "POST",
-    "PUT",
-    "PATCH",
-    "DELETE",
-    "OPTIONS",
-  ],
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
 
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-  ],
-};
-
-// CORS must run before API routes.
-app.use(cors(corsOptions));
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+    ],
+  })
+);
 
 app.use(helmet());
 
-app.use(
-  express.json({
-    limit: "1mb",
-  })
-);
-
-app.use(
-  express.urlencoded({
-    extended: true,
-  })
-);
-
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// General API rate limit
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 200,
@@ -83,7 +71,6 @@ const apiLimiter = rateLimit({
 
 app.use("/api", apiLimiter);
 
-// Health check
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
@@ -91,13 +78,11 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Authentication APIs
 app.use("/api/auth", authRoutes);
-
-// Vehicle catalog APIs
 app.use("/api/vehicles", vehicleRoutes);
+app.use("/api/pricing", pricingRoutes);
+app.use("/api/bookings", bookingRoutes);
 
-// Not found
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -105,7 +90,6 @@ app.use((req, res) => {
   });
 });
 
-// Central error handler
 app.use((error, req, res, next) => {
   if (res.headersSent) {
     return next(error);
@@ -114,7 +98,7 @@ app.use((error, req, res, next) => {
   if (error.message?.startsWith("CORS blocked origin:")) {
     return res.status(403).json({
       success: false,
-      message: error.message,
+      message: "Origin is not allowed",
     });
   }
 
