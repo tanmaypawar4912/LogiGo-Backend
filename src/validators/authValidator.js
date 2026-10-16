@@ -41,3 +41,13 @@ export const loginSchema = z.object({
     .string()
     .min(1, "Password is required"),
 });
+
+export const updateProfileSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(2, "Name must contain at least 2 characters")
+    .max(50, "Name is too long"),
+
+  phone: phoneSchema.optional().or(z.literal("")),
+});
