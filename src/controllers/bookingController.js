@@ -66,7 +66,6 @@ async function logDriverActivity({
       metadata,
     });
   } catch (error) {
-    // Logging failure must not fail a valid booking operation.
     console.error("Driver activity log failed:", error.message);
   }
 }
@@ -75,7 +74,13 @@ async function hasRequiredDriverDocumentsAndPhotos(profile) {
   return driverIsDispatchEligible(profile);
 }
 
-async function logBookingActivity({ actor, booking, action, message, metadata = {} }) {
+async function logBookingActivity({
+  actor,
+  booking,
+  action,
+  message,
+  metadata = {},
+}) {
   try {
     await DriverActivity.create({
       driver: null,
@@ -94,7 +99,7 @@ async function logBookingActivity({ actor, booking, action, message, metadata = 
   }
 }
 
-// CUSTOMER: Create a booking. Server recalculates route and fare.
+// CUSTOMER: Create a booking and start automatic dispatch.
 export const createBooking = async (req, res) => {
   try {
     const estimate = await calculateFareEstimate(req.body);
@@ -119,7 +124,11 @@ export const createBooking = async (req, res) => {
       fare: estimate.fare,
       status: "pending",
       paymentStatus: "unpaid",
-      dispatch: { mode: "automatic", status: "searching", offers: [] },
+      dispatch: {
+        mode: "automatic",
+        status: "searching",
+        offers: [],
+      },
       statusHistory: [
         {
           status: "pending",
@@ -129,8 +138,6 @@ export const createBooking = async (req, res) => {
       ],
     });
 
-    // Record booking creation separately from driver activity so the admin
-    // audit trail includes customer-created orders before any driver is assigned.
     void logBookingActivity({
       actor: req.user.userId,
       booking,
@@ -144,27 +151,28 @@ export const createBooking = async (req, res) => {
       },
     });
 
-    // Do not make booking creation dependent on SMTP or driver availability.
-    // Dispatch state is persisted and the background worker retries it.
     void notifyAdminsNewBooking(booking._id);
+
     void notifyBookingStatusToCustomer(
       booking._id,
       "pending",
       "Your booking has been received. Automatic driver dispatch has started."
     );
+
     void dispatchBooking(booking._id);
 
-    // Booking creation has committed. Treat a failed optional populate/read as
-    // non-fatal so the client does not retry and accidentally create a second
-    // order after a successful database write.
     let savedBooking = booking.toObject();
+
     try {
       savedBooking =
         (await Booking.findById(booking._id)
           .populate("vehicle", "name slug capacityKg")
           .lean()) || savedBooking;
     } catch (enrichmentError) {
-      console.error("Could not enrich newly created booking response:", enrichmentError.message);
+      console.error(
+        "Could not enrich newly created booking response:",
+        enrichmentError.message
+      );
     }
 
     return res.status(201).json({
@@ -185,7 +193,8 @@ export const createBooking = async (req, res) => {
   }
 };
 
-// CUSTOMER: Only the logged-in customer's own bookings.
+// CUSTOMER: Only return bookings belonging to the authenticated customer.
+// Supports the My Orders page's search, filter and pagination.
 export const getMyBookings = async (req, res) => {
   try {
     const page = Math.max(
@@ -199,7 +208,14 @@ export const getMyBookings = async (req, res) => {
     );
 
     const status =
-      typeof req.query.status === "string" ? req.query.status : "";
+      typeof req.query.status === "string"
+        ? req.query.status
+        : "";
+
+    const search =
+      typeof req.query.search === "string"
+        ? req.query.search.trim().slice(0, 120)
+        : "";
 
     if (status && !validStatuses.includes(status)) {
       return res.status(400).json({
@@ -213,6 +229,18 @@ export const getMyBookings = async (req, res) => {
       ...(status ? { status } : {}),
     };
 
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const phrase = new RegExp(escaped, "i");
+
+      filter.$or = [
+        { bookingCode: phrase },
+        { "pickup.address": phrase },
+        { "drop.address": phrase },
+        { "package.description": phrase },
+      ];
+    }
+
     const [bookings, total] = await Promise.all([
       Booking.find(filter)
         .sort({ createdAt: -1 })
@@ -220,6 +248,7 @@ export const getMyBookings = async (req, res) => {
         .limit(limit)
         .populate("vehicle", "name slug capacityKg")
         .lean(),
+
       Booking.countDocuments(filter),
     ]);
 
@@ -235,6 +264,7 @@ export const getMyBookings = async (req, res) => {
     });
   } catch (error) {
     console.error("Get customer bookings error:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Unable to retrieve bookings",
@@ -242,7 +272,7 @@ export const getMyBookings = async (req, res) => {
   }
 };
 
-// ADMIN: Bookings and currently online approved drivers.
+// ADMIN: Booking queue and dispatch-eligible online drivers.
 export const getAdminBookingQueue = async (req, res) => {
   try {
     const requestedStatus =
@@ -266,7 +296,9 @@ export const getAdminBookingQueue = async (req, res) => {
     );
 
     const filter =
-      requestedStatus === "all" ? {} : { status: requestedStatus };
+      requestedStatus === "all"
+        ? {}
+        : { status: requestedStatus };
 
     const [bookings, total, profiles] = await Promise.all([
       Booking.find(filter)
@@ -299,7 +331,11 @@ export const getAdminBookingQueue = async (req, res) => {
         profile.user.role === "driver" &&
         profile.user.isActive === true
     );
-    const driverEligibility = await profilesAreDispatchEligible(driverCandidates);
+
+    // Use the same document/photo eligibility checks as automatic dispatch.
+    const driverEligibility =
+      await profilesAreDispatchEligible(driverCandidates);
+
     const availableDrivers = driverCandidates
       .filter((_profile, index) => driverEligibility[index])
       .map((profile) => ({
@@ -319,10 +355,14 @@ export const getAdminBookingQueue = async (req, res) => {
       success: true,
       bookings,
       availableDrivers,
-      pagination: { total, limit },
+      pagination: {
+        total,
+        limit,
+      },
     });
   } catch (error) {
     console.error("Get admin booking queue error:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Unable to load booking queue",
@@ -330,7 +370,7 @@ export const getAdminBookingQueue = async (req, res) => {
   }
 };
 
-// ADMIN: Assign a currently online, approved driver.
+// ADMIN: Manually assign an eligible online driver.
 export const assignDriver = async (req, res) => {
   let reservedDriverUserId = null;
 
@@ -409,7 +449,7 @@ export const assignDriver = async (req, res) => {
       });
     }
 
-    // Atomically reserve the driver to prevent concurrent double assignment.
+    // Reserve the driver to prevent concurrent double assignments.
     const reservedProfile = await DriverProfile.findOneAndUpdate(
       {
         user: driverUserId,
@@ -475,11 +515,10 @@ export const assignDriver = async (req, res) => {
       });
     }
 
-    // The database assignment succeeded; do not release the driver if optional
-    // response enrichment or email delivery fails after this point.
     reservedDriverUserId = null;
 
     let booking = assignedBooking;
+
     try {
       booking =
         (await Booking.findById(assignedBooking._id)
@@ -488,10 +527,17 @@ export const assignDriver = async (req, res) => {
           .populate("vehicle", "name slug capacityKg")
           .lean()) || assignedBooking;
     } catch (enrichmentError) {
-      console.error("Could not enrich driver assignment response:", enrichmentError.message);
+      console.error(
+        "Could not enrich driver assignment response:",
+        enrichmentError.message
+      );
     }
 
-    void notifyBookingStatusToCustomer(booking._id, "assigned", "A driver has been assigned to your delivery.");
+    void notifyBookingStatusToCustomer(
+      booking._id,
+      "assigned",
+      "A driver has been assigned to your delivery."
+    );
 
     await logDriverActivity({
       driver: driverUserId,
@@ -527,6 +573,7 @@ export const assignDriver = async (req, res) => {
     }
 
     console.error("Assign driver error:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Unable to assign driver",
@@ -538,6 +585,7 @@ export const assignDriver = async (req, res) => {
 export const getDriverJobs = async (req, res) => {
   try {
     const now = new Date();
+
     const [jobs, profile] = await Promise.all([
       Booking.find({ driver: req.user.userId })
         .sort({ updatedAt: -1, createdAt: -1 })
@@ -545,12 +593,14 @@ export const getDriverJobs = async (req, res) => {
         .populate("customer", "name phone")
         .populate("vehicle", "name capacityKg slug")
         .lean(),
+
       DriverProfile.findOne({ user: req.user.userId })
         .select("availability approvalStatus isActive")
         .lean(),
     ]);
 
     let offers = [];
+
     if (
       profile?.availability === "online" &&
       profile.approvalStatus === "approved" &&
@@ -592,6 +642,7 @@ export const getDriverJobs = async (req, res) => {
     });
   } catch (error) {
     console.error("Get driver jobs error:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Unable to load driver jobs",
@@ -599,13 +650,16 @@ export const getDriverJobs = async (req, res) => {
   }
 };
 
-// DRIVER: Accept/reject an automatic offer or a legacy admin assignment.
+// DRIVER: Accept/reject a live automatic offer or a legacy admin assignment.
 export const respondToBooking = async (req, res) => {
   let reservedProfileUserId = null;
 
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ success: false, message: "Invalid booking ID" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking ID",
+      });
     }
 
     const { action, rejectionReason = "" } = req.body;
@@ -623,16 +677,15 @@ export const respondToBooking = async (req, res) => {
           expiresAt: { $gt: now },
         },
       },
-    }).select("_id bookingCode status driver dispatch").lean();
+    })
+      .select("_id bookingCode status driver dispatch")
+      .lean();
 
-    // Automatic dispatch offer: another driver may accept at any moment, so
-    // accept is claimed atomically after this driver's profile is reserved.
     if (offerBooking) {
-      // Read the profile for audit metadata. Declining a valid outstanding offer
-      // must remain possible even if the driver went offline or became ineligible
-      // after the offer was sent; accepting is checked separately below.
       const profile = await DriverProfile.findOne({ user: driverUserId })
-        .select("user _id approvalStatus availability isActive licenseExpiry documents vehiclePhotos registeredVehicles")
+        .select(
+          "user _id approvalStatus availability isActive licenseExpiry documents vehiclePhotos registeredVehicles"
+        )
         .lean();
 
       if (action === "reject") {
@@ -678,7 +731,11 @@ export const respondToBooking = async (req, res) => {
           driverProfile: profile?._id || null,
           action: "job_offer_rejected",
           message: `Driver declined automatic offer for booking ${rejected.bookingCode}`,
-          metadata: { bookingId: rejected._id, bookingCode: rejected.bookingCode, rejectionReason },
+          metadata: {
+            bookingId: rejected._id,
+            bookingCode: rejected.bookingCode,
+            rejectionReason,
+          },
         });
 
         void dispatchBooking(rejected._id);
@@ -705,8 +762,6 @@ export const respondToBooking = async (req, res) => {
         });
       }
 
-      // Atomic driver reservation prevents the same driver from claiming two
-      // concurrent offers (or being assigned a second active job).
       const reservedProfile = await DriverProfile.findOneAndUpdate(
         {
           user: driverUserId,
@@ -784,15 +839,15 @@ export const respondToBooking = async (req, res) => {
           { user: driverUserId, availability: "busy" },
           { $set: { availability: "online" } }
         );
+
         reservedProfileUserId = null;
+
         return res.status(409).json({
           success: false,
           message: "Another driver accepted this job, or the offer expired. It is no longer available.",
         });
       }
 
-      // The booking claim succeeded. Do not release this driver after this
-      // point, even if non-critical offer cleanup or notifications fail.
       reservedProfileUserId = null;
 
       const competingOffers = (accepted.dispatch?.offers || []).filter(
@@ -801,9 +856,6 @@ export const respondToBooking = async (req, res) => {
           String(offer.driver) !== String(driverUserId)
       );
 
-      // Make all competing offers unavailable while preserving their audit rows.
-      // Booking.status/driver are already atomically claimed, so cleanup failure
-      // cannot permit a second driver to accept this booking.
       try {
         await Booking.updateOne(
           { _id: accepted._id },
@@ -823,7 +875,10 @@ export const respondToBooking = async (req, res) => {
           }
         );
       } catch (cleanupError) {
-        console.error("Could not mark competing dispatch offers lost:", cleanupError.message);
+        console.error(
+          "Could not mark competing dispatch offers lost:",
+          cleanupError.message
+        );
       }
 
       await Promise.all(
@@ -848,7 +903,12 @@ export const respondToBooking = async (req, res) => {
         driverProfile: reservedProfile._id,
         action: "job_accepted",
         message: `Driver accepted booking ${accepted.bookingCode}`,
-        metadata: { bookingId: accepted._id, bookingCode: accepted.bookingCode, status: accepted.status, dispatchMode: "automatic" },
+        metadata: {
+          bookingId: accepted._id,
+          bookingCode: accepted.bookingCode,
+          status: accepted.status,
+          dispatchMode: "automatic",
+        },
       });
 
       void notifyBookingStatusToCustomer(
@@ -864,8 +924,6 @@ export const respondToBooking = async (req, res) => {
       });
     }
 
-    // Backward-compatible handling for bookings assigned manually before
-    // automatic dispatch was enabled.
     const profile = await DriverProfile.findOne({
       user: driverUserId,
       approvalStatus: "approved",
@@ -883,7 +941,9 @@ export const respondToBooking = async (req, res) => {
       _id: req.params.id,
       driver: driverUserId,
       status: "assigned",
-    }).select("_id bookingCode status").lean();
+    })
+      .select("_id bookingCode status")
+      .lean();
 
     if (!currentBooking) {
       return res.status(409).json({
@@ -893,6 +953,7 @@ export const respondToBooking = async (req, res) => {
     }
 
     const accepting = action === "accept";
+
     const update = accepting
       ? {
           $set: { status: "accepted" },
@@ -933,7 +994,9 @@ export const respondToBooking = async (req, res) => {
       {
         returnDocument: "after",
         runValidators: true,
-        ...(accepting ? {} : { arrayFilters: [{ "offer.status": "offered" }] }),
+        ...(accepting
+          ? {}
+          : { arrayFilters: [{ "offer.status": "offered" }] }),
       }
     ).lean();
 
@@ -949,6 +1012,7 @@ export const respondToBooking = async (req, res) => {
         { user: driverUserId, availability: "busy" },
         { $set: { availability: "online" } }
       );
+
       void dispatchBooking(booking._id);
     } else {
       void notifyBookingStatusToCustomer(
@@ -986,11 +1050,15 @@ export const respondToBooking = async (req, res) => {
         { user: reservedProfileUserId, availability: "busy" },
         { $set: { availability: "online" } }
       ).catch((releaseError) => {
-        console.error("Could not release reserved driver:", releaseError.message);
+        console.error(
+          "Could not release reserved driver:",
+          releaseError.message
+        );
       });
     }
 
     console.error("Respond to booking error:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Unable to respond to this job",
@@ -1104,9 +1172,183 @@ export const updateDriverBookingStatus = async (req, res) => {
     });
   } catch (error) {
     console.error("Update delivery status error:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Unable to update delivery status",
+    });
+  }
+};
+
+// CUSTOMER: Cancel only before a driver accepts and only when no payment has been taken.
+// The status/payment predicates make the operation atomic against driver acceptance or status updates.
+export const cancelCustomerBooking = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking ID",
+      });
+    }
+
+    const cancellationReason =
+      typeof req.body.cancellationReason === "string"
+        ? req.body.cancellationReason.trim().slice(0, 500)
+        : "";
+
+    const existing = await Booking.findOne({
+      _id: req.params.id,
+      customer: req.user.userId,
+    })
+      .select("_id bookingCode status driver paymentStatus")
+      .lean();
+
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    if (!["pending", "assigned"].includes(existing.status)) {
+      return res.status(409).json({
+        success: false,
+        message: "This booking can only be cancelled before a driver accepts it. Please contact support if you need help with an accepted or in-progress delivery.",
+        currentStatus: existing.status,
+      });
+    }
+
+    if (!["unpaid", "failed"].includes(existing.paymentStatus)) {
+      return res.status(409).json({
+        success: false,
+        message: "This booking has a payment in progress or already recorded. Please contact support so payment can be checked safely.",
+        paymentStatus: existing.paymentStatus,
+      });
+    }
+
+    const now = new Date();
+    const reason = cancellationReason || "Cancelled by customer";
+
+    const booking = await Booking.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        customer: req.user.userId,
+        status: { $in: ["pending", "assigned"] },
+        paymentStatus: { $in: ["unpaid", "failed"] },
+      },
+      {
+        $set: {
+          status: "cancelled",
+          cancelledAt: now,
+          cancellationReason: reason,
+        },
+        $push: {
+          statusHistory: {
+            status: "cancelled",
+            changedBy: req.user.userId,
+            note: `Customer cancelled booking: ${reason}`.slice(0, 300),
+            createdAt: now,
+          },
+        },
+      },
+      { returnDocument: "after", runValidators: true }
+    ).lean();
+
+    if (!booking) {
+      return res.status(409).json({
+        success: false,
+        message: "This booking changed while you were cancelling it. Refresh the page and check the latest status.",
+      });
+    }
+
+    // Stop worker retries and invalidate outstanding offers. The booking status is
+    // already terminal, so even a concurrent driver response cannot accept it.
+    try {
+      await Booking.updateOne(
+        { _id: booking._id, status: "cancelled" },
+        {
+          $set: {
+            "dispatch.status": "cancelled",
+            "dispatch.nextAttemptAt": null,
+            "dispatch.lockedAt": null,
+          },
+        },
+        { runValidators: true }
+      );
+
+      // Older records may not have a dispatch.offers array, so clean it only
+      // when the array exists to avoid a positional update against a missing path.
+      await Booking.updateOne(
+        {
+          _id: booking._id,
+          status: "cancelled",
+          "dispatch.offers.0": { $exists: true },
+        },
+        {
+          $set: {
+            "dispatch.offers.$[offered].status": "lost",
+            "dispatch.offers.$[offered].respondedAt": now,
+          },
+        },
+        { arrayFilters: [{ "offered.status": "offered" }] }
+      );
+    } catch (cleanupError) {
+      // Cancellation itself is already persisted. Log cleanup failures for audit.
+      console.error("Could not clean up cancelled booking dispatch state:", cleanupError.message);
+    }
+
+    // Manual admin assignments reserve a driver as busy. Release that reservation
+    // only if this booking was the one cancelled before acceptance.
+    if (booking.driver) {
+      try {
+        await DriverProfile.updateOne(
+          { user: booking.driver, availability: "busy" },
+          { $set: { availability: "online" } }
+        );
+      } catch (releaseError) {
+        console.error("Could not release driver after customer cancellation:", releaseError.message);
+      }
+    }
+
+    void logBookingActivity({
+      actor: req.user.userId,
+      booking,
+      action: "booking_cancelled_by_customer",
+      message: `Customer cancelled booking ${booking.bookingCode}`,
+      metadata: { cancellationReason: reason },
+    });
+
+    void notifyBookingStatusToCustomer(
+      booking._id,
+      "cancelled",
+      "Your booking was cancelled before driver acceptance. No payment was taken through this booking flow."
+    );
+
+    let updatedBooking = booking;
+    try {
+      updatedBooking = (await Booking.findById(booking._id)
+        .populate("vehicle", "name slug capacityKg")
+        .populate("customer", "name email phone")
+        .populate("driver", "name phone")
+        .populate("statusHistory.changedBy", "name role")
+        .lean()) || booking;
+    } catch (enrichmentError) {
+      // The cancellation is already committed. A read/populate problem must not
+      // report the successful mutation as a failed cancellation.
+      console.error("Could not enrich cancellation response:", enrichmentError.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Your booking has been cancelled.",
+      booking: updatedBooking,
+    });
+  } catch (error) {
+    console.error("Cancel customer booking error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to cancel this booking right now. Refresh the page and try again.",
     });
   }
 };
@@ -1125,6 +1367,7 @@ export const getBookingById = async (req, res) => {
       .populate("vehicle", "name slug capacityKg")
       .populate("customer", "name email phone")
       .populate("driver", "name phone")
+      .populate("statusHistory.changedBy", "name role")
       .lean();
 
     if (!booking) {
@@ -1146,9 +1389,13 @@ export const getBookingById = async (req, res) => {
       });
     }
 
-    return res.status(200).json({ success: true, booking });
+    return res.status(200).json({
+      success: true,
+      booking,
+    });
   } catch (error) {
     console.error("Get booking error:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Unable to retrieve booking",

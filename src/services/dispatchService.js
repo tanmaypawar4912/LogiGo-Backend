@@ -12,7 +12,9 @@ import {
 const OFFER_TTL_MS = 2 * 60 * 1000;
 const RETRY_DELAY_MS = 30 * 1000;
 const LOCK_TTL_MS = 2 * 60 * 1000;
-const OFFER_BATCH_SIZE = 5;
+// Send each booking offer to one eligible driver at a time. A new offer is
+// created only after the current offer is rejected or expires.
+const OFFER_BATCH_SIZE = 1;
 const DRIVER_REOFFER_COOLDOWN_MS = 5 * 60 * 1000;
 const SWEEP_BATCH_SIZE = 50;
 const ACTIVE_ASSET_STATUSES = ["uploaded", "linked"];

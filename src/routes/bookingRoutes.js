@@ -1,4 +1,3 @@
-
 import express from "express";
 
 import {
@@ -10,22 +9,34 @@ import {
   getDriverJobs,
   respondToBooking,
   updateDriverBookingStatus,
+  cancelCustomerBooking,
 } from "../controllers/bookingController.js";
+
+import {
+  updateDriverLiveLocation,
+  stopDriverLiveLocation,
+  getBookingLiveLocation,
+} from "../controllers/driverTrackingController.js";
+
+import {
+  getDriverCompletedJobs,
+} from "../controllers/driverHistoryController.js";
 
 import { protect } from "../middleware/authMiddleware.js";
 import { authorizeRoles } from "../middleware/roleMiddleware.js";
 import { validate } from "../middleware/validateMiddleware.js";
+import { reconcileStaleBusyDriver } from "../middleware/reconcileStaleBusyDriver.js";
 
 import {
   createBookingSchema,
   assignDriverSchema,
   driverResponseSchema,
   updateDeliveryStatusSchema,
+  cancelBookingSchema,
 } from "../validators/bookingValidator.js";
 
 const router = express.Router();
 
-// Customer: create a booking.
 router.post(
   "/",
   protect,
@@ -34,7 +45,6 @@ router.post(
   createBooking
 );
 
-// Customer: list own bookings.
 router.get(
   "/my",
   protect,
@@ -42,7 +52,6 @@ router.get(
   getMyBookings
 );
 
-// Admin: booking queue and available drivers.
 router.get(
   "/admin/queue",
   protect,
@@ -50,7 +59,6 @@ router.get(
   getAdminBookingQueue
 );
 
-// Admin: assign an eligible driver.
 router.patch(
   "/admin/:id/assign",
   protect,
@@ -59,15 +67,21 @@ router.patch(
   assignDriver
 );
 
-// Driver: active assigned jobs.
 router.get(
   "/driver/jobs",
   protect,
   authorizeRoles("driver"),
+  reconcileStaleBusyDriver,
   getDriverJobs
 );
 
-// Driver: accept or reject a job.
+router.get(
+  "/driver/completed",
+  protect,
+  authorizeRoles("driver"),
+  getDriverCompletedJobs
+);
+
 router.patch(
   "/:id/respond",
   protect,
@@ -76,7 +90,6 @@ router.patch(
   respondToBooking
 );
 
-// Driver: update delivery status through valid transitions.
 router.patch(
   "/:id/status",
   protect,
@@ -85,8 +98,33 @@ router.patch(
   updateDriverBookingStatus
 );
 
-// Any authorized customer, assigned driver or admin can view a booking.
-// Keep this parameter route last.
+router.patch(
+  "/:id/cancel",
+  protect,
+  authorizeRoles("customer"),
+  validate(cancelBookingSchema),
+  cancelCustomerBooking
+);
+
+
+// Booking-scoped location endpoints; controller enforces ownership/status again.
+router.post(
+  "/:id/location",
+  protect,
+  authorizeRoles("driver"),
+  updateDriverLiveLocation
+);
+
+router.delete(
+  "/:id/location",
+  protect,
+  authorizeRoles("driver"),
+  stopDriverLiveLocation
+);
+
+router.get("/:id/location", protect, getBookingLiveLocation);
+
+// Keep this dynamic route last so it cannot intercept fixed routes above.
 router.get("/:id", protect, getBookingById);
 
 export default router;

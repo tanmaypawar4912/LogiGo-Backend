@@ -26,4 +26,7 @@ export const estimateFareSchema = z.object({
     .finite()
     .min(0.1, "Weight must be greater than zero")
     .max(5000, "Maximum supported weight is 5000 kg"),
+
+  pickupLocationToken: z.string().max(4096).optional(),
+  dropLocationToken: z.string().max(4096).optional(),
 });

@@ -13,6 +13,7 @@ import bookingRoutes from "./routes/bookingRoutes.js";
 import driverRoutes from "./routes/driverRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
+import enterpriseRoutes from "./routes/enterpriseRoutes.js";
 
 const app = express();
 
@@ -94,6 +95,7 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/drivers", driverRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/complaints", complaintRoutes);
+app.use("/api/enterprise", enterpriseRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

@@ -6,6 +6,7 @@ import {
   geocodeAddress,
   getDrivingRoute,
 } from "./mapboxService.js";
+import { verifySignedLocationToken } from "../utils/locationToken.js";
 
 const roundMoney = (amount) =>
   Math.round((amount + Number.EPSILON) * 100) / 100;
@@ -21,6 +22,8 @@ export async function calculateFareEstimate({
   dropAddress,
   vehicleId,
   weightKg,
+  pickupLocationToken,
+  dropLocationToken,
 }) {
   const vehicle = await Vehicle.findOne({
     _id: vehicleId,
@@ -51,8 +54,12 @@ export async function calculateFareEstimate({
   }
 
   const [pickup, drop] = await Promise.all([
-    geocodeAddress(pickupAddress),
-    geocodeAddress(dropAddress),
+    pickupLocationToken
+      ? Promise.resolve(verifySignedLocationToken(pickupLocationToken, pickupAddress))
+      : geocodeAddress(pickupAddress),
+    dropLocationToken
+      ? Promise.resolve(verifySignedLocationToken(dropLocationToken, dropAddress))
+      : geocodeAddress(dropAddress),
   ]);
 
   const route = await getDrivingRoute(pickup, drop);

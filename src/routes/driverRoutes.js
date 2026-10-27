@@ -1,21 +1,26 @@
-
 import express from "express";
 import multer from "multer";
 
 import {
   submitDriverProfile,
-  updateDriverProfile,
   getMyDriverProfile,
+  requestDriverProfileChange,
   setDriverAvailability,
   getOnlineDrivers,
-  listDriverProfiles,
   reviewDriverProfile,
+  reviewDriverProfileChange,
   getDriverVehicles,
   addDriverVehicle,
   selectActiveDriverVehicle,
-  updateDriverVehicle,
+  requestDriverVehicleChange,
+  reviewDriverVehicle,
+  reviewDriverVehicleChange,
   listDriverActivities,
 } from "../controllers/driverController.js";
+
+import {
+  listDriverProfilesForAdmin,
+} from "../controllers/adminDriverProfileController.js";
 
 import {
   uploadDriverMedia,
@@ -30,9 +35,12 @@ import { validateDriverPhotoOwnership } from "../middleware/validateDriverPhotoO
 
 import {
   driverProfileSchema,
+  driverProfileChangeSchema,
   driverVehicleSchema,
+  driverVehicleChangeSchema,
   driverAvailabilitySchema,
   reviewDriverSchema,
+  reviewChangeRequestSchema,
 } from "../validators/driverValidator.js";
 
 const router = express.Router();
@@ -54,7 +62,9 @@ const upload = multer({
       const error = new Error(
         "Only JPG, PNG and WEBP images are allowed"
       );
+
       error.statusCode = 422;
+
       return callback(error);
     }
 
@@ -107,14 +117,12 @@ router.get(
   getMyDriverProfile
 );
 
-// Existing driver profiles update directly. POST /profile remains initial onboarding only.
-router.patch(
-  "/profile",
+router.post(
+  "/profile/change-request",
   protect,
   authorizeRoles("driver"),
-  validate(driverProfileSchema),
-  validateDriverPhotoOwnership,
-  updateDriverProfile
+  validate(driverProfileChangeSchema),
+  requestDriverProfileChange
 );
 
 router.patch(
@@ -142,16 +150,6 @@ router.get(
   getDriverVehicles
 );
 
-router.patch(
-  "/vehicles/:vehicleId",
-  protect,
-  authorizeRoles("driver"),
-  validate(driverVehicleSchema),
-  validateDriverPhotoOwnership,
-  updateDriverVehicle
-);
-
-// Additional vehicle creation remains disabled: one driver has exactly one vehicle.
 router.post(
   "/vehicles",
   protect,
@@ -168,6 +166,14 @@ router.patch(
   selectActiveDriverVehicle
 );
 
+router.post(
+  "/vehicles/:vehicleId/change-request",
+  protect,
+  authorizeRoles("driver"),
+  validate(driverVehicleChangeSchema),
+  validateDriverPhotoOwnership,
+  requestDriverVehicleChange
+);
 
 // ---------------------------------------------------------------------
 // ADMIN DRIVER APIs
@@ -177,7 +183,7 @@ router.get(
   "/admin/profiles",
   protect,
   authorizeRoles("admin"),
-  listDriverProfiles
+  listDriverProfilesForAdmin
 );
 
 router.patch(
@@ -188,8 +194,29 @@ router.patch(
   reviewDriverProfile
 );
 
+router.patch(
+  "/admin/profiles/:id/change-request/review",
+  protect,
+  authorizeRoles("admin"),
+  validate(reviewChangeRequestSchema),
+  reviewDriverProfileChange
+);
 
+router.patch(
+  "/admin/profiles/:id/vehicles/:vehicleId/review",
+  protect,
+  authorizeRoles("admin"),
+  validate(reviewDriverSchema),
+  reviewDriverVehicle
+);
 
+router.patch(
+  "/admin/profiles/:id/vehicles/:vehicleId/change-request/review",
+  protect,
+  authorizeRoles("admin"),
+  validate(reviewChangeRequestSchema),
+  reviewDriverVehicleChange
+);
 
 router.get(
   "/admin/activities",
@@ -198,12 +225,18 @@ router.get(
   listDriverActivities
 );
 
-// Handle Multer and upload middleware errors.
+// ---------------------------------------------------------------------
+// Upload middleware error handling
+// ---------------------------------------------------------------------
+
 router.use((error, _req, res, next) => {
-  if (!error) return next();
+  if (!error) {
+    return next();
+  }
 
   if (error instanceof multer.MulterError) {
-    const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    const status =
+      error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
 
     return res.status(status).json({
       success: false,

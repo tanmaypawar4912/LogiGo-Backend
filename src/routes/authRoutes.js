@@ -12,6 +12,11 @@ import {
   resetPassword,
 } from "../controllers/authController.js";
 
+import {
+  changeEmail,
+  changePassword,
+} from "../controllers/accountSecurityController.js";
+
 import { protect } from "../middleware/authMiddleware.js";
 import { validate } from "../middleware/validateMiddleware.js";
 
@@ -28,20 +33,6 @@ import {
 
 const router = express.Router();
 
-// Protect credentials separately from ordinary dashboard polling.
-const authenticationLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 10,
-  standardHeaders: "draft-8",
-  legacyHeaders: false,
-  message: {
-    success: false,
-    code: "AUTH_RATE_LIMITED",
-    message: "Too many login or registration attempts. Please wait 15 minutes before trying again.",
-  },
-});
-
-// Rate-limit password recovery endpoints.
 const passwordRecoveryLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
@@ -49,28 +40,13 @@ const passwordRecoveryLimiter = rateLimit({
   legacyHeaders: false,
   message: {
     success: false,
-    message:
-      "Too many password recovery attempts. Please try again later.",
+    message: "Too many password recovery attempts. Please try again later.",
   },
 });
 
-// Registration
-router.post(
-  "/register",
-  authenticationLimiter,
-  validate(registerSchema),
-  register
-);
+router.post("/register", validate(registerSchema), register);
+router.post("/login", validate(loginSchema), login);
 
-// Login
-router.post(
-  "/login",
-  authenticationLimiter,
-  validate(loginSchema),
-  login
-);
-
-// Forgot password
 router.post(
   "/forgot-password",
   passwordRecoveryLimiter,
@@ -78,7 +54,6 @@ router.post(
   requestPasswordReset
 );
 
-// Reset password
 router.post(
   "/reset-password",
   passwordRecoveryLimiter,
@@ -86,19 +61,9 @@ router.post(
   resetPassword
 );
 
-// Refresh access token
-router.post(
-  "/refresh",
-  refreshAccessToken
-);
+router.post("/refresh", refreshAccessToken);
+router.post("/logout", logout);
 
-// Logout
-router.post(
-  "/logout",
-  logout
-);
-
-// Update authenticated user's own profile
 router.patch(
   "/profile",
   protect,
@@ -106,11 +71,9 @@ router.patch(
   updateProfile
 );
 
-// Get authenticated user's details
-router.get(
-  "/me",
-  protect,
-  getCurrentUser
-);
+router.patch("/change-email", protect, changeEmail);
+router.patch("/change-password", protect, changePassword);
+
+router.get("/me", protect, getCurrentUser);
 
 export default router;

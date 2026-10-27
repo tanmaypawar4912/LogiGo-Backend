@@ -49,6 +49,9 @@ export const createBookingSchema = z.object({
     .max(500)
     .optional()
     .default(""),
+
+  pickupLocationToken: z.string().max(4096).optional(),
+  dropLocationToken: z.string().max(4096).optional(),
 });
 
 export const assignDriverSchema = z.object({
@@ -79,4 +82,13 @@ export const driverResponseSchema = z
 
 export const updateDeliveryStatusSchema = z.object({
   status: z.enum(bookingStatuses),
+});
+
+export const cancelBookingSchema = z.object({
+  cancellationReason: z
+    .string()
+    .trim()
+    .max(500, "Cancellation reason must be 500 characters or fewer")
+    .optional()
+    .default(""),
 });

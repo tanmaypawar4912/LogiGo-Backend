@@ -175,7 +175,7 @@ const dispatchSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["searching", "offering", "accepted", "exhausted"],
+      enum: ["searching", "offering", "accepted", "exhausted", "cancelled"],
       default: "searching",
       index: true,
     },
